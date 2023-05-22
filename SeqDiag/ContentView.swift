@@ -34,13 +34,16 @@ struct ContentView: View {
                 "Return supplies".from(a, to: p).openArrow.deactivate.activate
                 a.deactivate
                 10
-                "Phase Tran ksition"
+                "Phase Transition"
                 10
                 "The *Apples* spoke to me".from(p, to: s).deactivate
                 40
                 "The ***Apples*** feel sad and unwanted".note(from: a, to: p)
 
                 b.deactivate
+
+                "test".note(leftOf: a)
+                "test".note(rightOf: b)
             }
         }
         .padding()

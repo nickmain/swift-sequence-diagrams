@@ -15,7 +15,7 @@ class LayoutText {
     let size = MutableSize()
     var resolvedText: GraphicsContext.ResolvedText?
 
-    init(text: Text, color: KeyPath<ConfigColors, Color>) {
+    fileprivate init(text: Text, color: KeyPath<ConfigColors, Color>) {
         self.text = text
         self.color = color
     }
@@ -34,6 +34,8 @@ class DiagramLayout {
     var layoutText = [LayoutText]()
     var columns = [ColumnLayout]()
     var rows = [RowLayout]()
+
+    var columnFromId = [Participant.ID: ColumnLayout]()
 
     var participantLayer = [LayoutElement]()
     var activationLayer = [LayoutElement]()
@@ -81,28 +83,42 @@ class DiagramLayout {
             return self?.maxColumnHeaderHeight.value ?? 0
         }
 
-        for part in model.participants {
-            let layout = ColumnLayout(participant: part, diagram: self)
+        for (index, part) in model.participants.enumerated() {
+            let layout = ColumnLayout(participant: part, index: index, diagram: self)
             columns.append(layout)
             participantLayer.append(layout)
             participantLayer.append(LifeLineLayout(column: layout, diagram: self))
+
+            columnFromId[part.id] = layout
         }
 
         for row in model.elements {
             var rowLayout: RowLayout?
 
-            switch row {
-            case .message(_): continue // TODO:
-            case .activate(_): continue // TODO:
-            case .deactivate(_): continue // TODO:
-            case .note(_): continue // TODO:
-            case .fragmentStart(_): continue // TODO:
-            case .fragmentAlternate(_): continue // TODO:
-            case .fragmentEnd: continue // TODO:
-            case .separator(let sep):
-                rowLayout = SeparatorLayout(sep: sep, diagram: self)
-            case .padding(let padding):
-                rowLayout = PaddingLayout(padding: padding, diagram: self)
+            do {
+                switch row {
+                case .message(_):
+                    rowLayout = ErrorLayout(message: "UNIMPLEMENTED **message**", diagram: self)
+                case .activate(_):
+                    rowLayout = ErrorLayout(message: "UNIMPLEMENTED **activate**", diagram: self)
+                case .deactivate(_):
+                    rowLayout = ErrorLayout(message: "UNIMPLEMENTED **deactivate**", diagram: self)
+                case .note(let note):
+                    rowLayout = try NoteLayout(note: note, diagram: self)
+                case .fragmentStart(_): continue // TODO:
+                case .fragmentAlternate(_): continue // TODO:
+                case .fragmentEnd: continue // TODO:
+                case .separator(let sep):
+                    rowLayout = SeparatorLayout(sep: sep, diagram: self)
+                case .padding(let padding):
+                    rowLayout = PaddingLayout(padding: padding, diagram: self)
+                }
+            } catch {
+                if let err = error as? LayoutException {
+                    rowLayout = ErrorLayout(message: err.message, diagram: self)
+                } else {
+                    rowLayout = ErrorLayout(message: error.localizedDescription, diagram: self)
+                }
             }
 
             if let rowLayout {
@@ -110,8 +126,27 @@ class DiagramLayout {
                 rowLayer.append(rowLayout)
             }
         }
+    }
 
+    // Get the col layouts for the given ids, in left-to-right order and
+    // also return a boolean that is true if the ids were reversed
+    func colsInOrder(_ id1: Participant.ID, _ id2: Participant.ID) -> (Bool, ColumnLayout, ColumnLayout)? {
+        guard let col1 = columnFromId[id1],
+              let col2 = columnFromId[id2]
+        else { return nil }
 
+        if col1.index > col2.index {
+            return (true, col2, col1)
+        }
+
+        return (false, col1, col2)
+    }
+
+    // Make a LayoutText and register it for resolution at rendering time
+    func makeText(text: Text, color: KeyPath<ConfigColors, Color>) -> LayoutText {
+        let lt = LayoutText(text: text, color: color)
+        layoutText.append(lt)
+        return lt
     }
 
     // Draw the diagram in the given context
@@ -130,245 +165,8 @@ class DiagramLayout {
             }
         }
 
-        gc.draw(rect: bounds, with: .red, stroke: config.messageLineStroke)
-        gc.draw(rect: contentBounds, with: .yellow, stroke: config.messageLineStroke)
-    }
-}
-
-struct ActivationLayout: LayoutElement {
-
-    let bounds: Rect
-
-    private let stroke: StrokeStyle
-
-    init(padding: CGFloat, diagram: DiagramLayout) {
-        stroke = diagram.config.activationLineStroke
-
-        // TODO:
-        bounds = Rect(cgrect: .zero)
-    }
-
-    func draw(gc: GraphicsContext, colors: ConfigColors) {
-        gc.fill(rect: bounds, with: colors.activationFill)
-        gc.draw(rect: bounds, with: colors.activationLine, stroke: stroke)
-    }
-}
-
-protocol RowLayout: LayoutElement {
-    var bottomEdge: YValue { get }
-}
-
-struct PaddingLayout: RowLayout {
-    let bottomEdge: YValue
-
-    init(padding: CGFloat, diagram: DiagramLayout) {
-        bottomEdge = (diagram.rows.last?.bottomEdge ?? diagram.firstRowTop) + padding
-    }
-
-    func draw(gc: GraphicsContext, colors: ConfigColors) {
-        // nothing
-    }
-}
-
-struct SeparatorLayout: RowLayout {
-    let bottomEdge: YValue
-
-    private let stroke: StrokeStyle
-    private let lineBackRect: Rect
-
-    private let textLayout: LayoutText?
-    private let textBackRect: Rect?
-
-    init(sep: SequenceDiagramModel.Separator, diagram: DiagramLayout) {
-        let topEdge: YValue
-        if let lastBottomEdge = diagram.rows.last?.bottomEdge {
-            topEdge = lastBottomEdge + diagram.config.interRowGap
-        } else {
-            topEdge = diagram.firstRowTop
-        }
-
-        // height is max of separatorHeight and padded text height
-        let height = AggregateComputation.maximum()
-        height.add(argument: diagram.config.separatorHeight)
-
-        let bounds = Rect(x: diagram.contentBounds.x,
-                          y: topEdge,
-                          w: diagram.contentBounds.width,
-                          h: height)
-
-        let lineBackSize = ComputedSize(width: diagram.contentBounds.width,
-                                        height: diagram.config.separatorHeight)
-        self.lineBackRect = bounds.centeredRect(size: lineBackSize)
-
-        if let caption = sep.caption {
-            let text = Text(caption).font(diagram.config.separatorFont)
-            let textLayout = LayoutText(text: text, color: \.separatorText)
-            diagram.layoutText.append(textLayout)
-            self.textLayout = textLayout
-            height.add(argument: textLayout.size.height)
-
-            // add padding to text size to get background size
-            let textBackSize = textLayout.size.larger(by: diagram.config.separatorTextPadding * 2)
-
-            self.textBackRect = bounds.centeredRect(size: textBackSize)
-
-        } else {
-            self.textLayout = nil
-            self.textBackRect = nil
-        }
-
-        self.stroke = diagram.config.separatorLineStroke
-        self.bottomEdge = topEdge + height
-    }
-
-    func draw(gc: GraphicsContext, colors: ConfigColors) {
-        gc.fill(rect: lineBackRect, with: colors.separatorBackground)
-        gc.draw(line: lineBackRect.leftCenter, lineBackRect.rightCenter,
-                with: colors.separatorLine,
-                stroke: stroke)
-
-        if let textLayout,
-           let textBackRect,
-           let resolvedText = textLayout.resolvedText {
-
-            gc.fill(rect: textBackRect, with: colors.separatorBackground)
-            gc.draw(resolvedText, at: textBackRect.center.cgpoint, anchor: .center)
-        }
-    }
-}
-
-struct ColumnLayout: LayoutElement {
-    let isActor: Bool
-    let centerX: MemoizedValue
-    let rightEdge: XValue
-    let bottomEdge: YValue // top for life line
-
-    // Computations that specify the X for the center lifeline.
-    // These are dependent on things such as the minimum width of a message.
-    let centerXRequirements: AggregateComputation
-
-    private let header: HeaderLayout
-
-    init(participant: Participant, diagram: DiagramLayout) {
-        isActor = participant.isActor
-        centerXRequirements = .maximum()
-        centerX = MemoizedValue(centerXRequirements)
-
-        let topCenter = Point(x: centerX, y: diagram.bounds.y)
-
-        header = isActor ?
-            ActorLayout(participant: participant, topCenter: topCenter, diagram: diagram) :
-            ParticipantLayout(participant: participant, topCenter: topCenter, diagram: diagram)
-
-        // center x minimum constraint, determined from right edge of previous col
-        // or left edge of diagram bounds
-        let leftEdge: LayoutValue
-        if let previousColumn = diagram.columns.last {
-            leftEdge = previousColumn.rightEdge + diagram.config.minParticipantGap
-        } else {
-            leftEdge = diagram.bounds.x
-        }
-        centerXRequirements.add(argument: leftEdge + header.width.half)
-
-        self.rightEdge = leftEdge + header.width
-        self.bottomEdge = topCenter.y
-                        + diagram.maxColumnHeaderHeight
-                        + (isActor ? diagram.config.actorBottomMargin : 0)
-    }
-
-    func draw(gc: GraphicsContext, colors: ConfigColors) {
-        header.draw(gc: gc, colors: colors)
-    }
-}
-
-// Actor or Participant header
-protocol HeaderLayout: LayoutElement {
-    var width: Width { get }
-}
-
-struct ParticipantLayout: HeaderLayout {
-    let width: Width
-
-    private let rect: Rect
-    private let textLayout: LayoutText
-    private let stroke: StrokeStyle
-
-    init(participant part: Participant, topCenter: Point, diagram: DiagramLayout) {
-        stroke = diagram.config.participantStroke
-
-        let text = Text(part.label).font(diagram.config.participantFont)
-        textLayout = LayoutText(text: text, color: \.participantText)
-        diagram.layoutText.append(textLayout)
-
-        width = max(textLayout.size.width + (diagram.config.participantHorizontalPadding * 2), diagram.config.minParticipantSize.width)
-        let height = textLayout.size.height + (diagram.config.participantVerticalPadding * 2)
-        diagram.maxColumnHeaderHeight.add(argument: height)
-
-        rect = Rect(origin: topCenter.left(by: width.half),
-                    size: ComputedSize(width: width,
-                                       height: diagram.maxColumnHeaderHeight))
-    }
-
-    func draw(gc: GraphicsContext, colors: ConfigColors) {
-        gc.fill(rect: rect, with: colors.participantFill)
-        gc.draw(rect: rect, with: colors.participantLine, stroke: stroke)
-
-        if let resolvedText = textLayout.resolvedText {
-            gc.draw(resolvedText, at: rect.center.cgpoint, anchor: .center)
-        }
-    }
-}
-
-struct ActorLayout: HeaderLayout {
-    let width: Width
-
-    private let image: Image
-    private let imageRect: Rect
-    private let textLayout: LayoutText
-    private let textBottomCenter: Point
-
-    init(participant part: Participant, topCenter: Point, diagram: DiagramLayout) {
-        let text = Text(part.label).font(diagram.config.participantFont)
-        textLayout = LayoutText(text: text, color: \.participantText)
-        diagram.layoutText.append(textLayout)
-
-        self.image = Image(systemName: diagram.config.actorSymbolName)
-        let imageSize = ComputedSize(cgsize: diagram.config.actorSymbolSize)
-        self.imageRect = Rect.withTopCenter(point: topCenter, size: imageSize)
-        self.width = max(textLayout.size.width, imageRect.width, diagram.config.minParticipantSize.width)
-
-        let height = textLayout.size.height + imageSize.height + diagram.config.actorSymbolBottomMargin
-        diagram.maxColumnHeaderHeight.add(argument: height)
-
-        self.textBottomCenter = topCenter.down(by: diagram.maxColumnHeaderHeight)
-    }
-
-    func draw(gc: GraphicsContext, colors: ConfigColors) {
-        var resolvedImage = gc.resolve(image)
-        resolvedImage.shading = .color(colors.actorSymbol)
-        gc.draw(resolvedImage, in: imageRect.cgrect)
-
-        if let resolvedText = textLayout.resolvedText {
-            gc.draw(resolvedText, at: textBottomCenter.cgpoint, anchor: .bottom)
-        }
-    }
-}
-
-struct LifeLineLayout: LayoutElement {
-    private let stroke: StrokeStyle
-    private let top: Point
-    private let bottom: Point
-
-    init(column: ColumnLayout, diagram: DiagramLayout) {
-        stroke = column.isActor ? diagram.config.actorLifeLineStroke : diagram.config.lifeLineStroke
-
-        top = Point(x: column.centerX, y: column.bottomEdge)
-        bottom = Point(x: column.centerX, y: diagram.bounds.bottomY)
-    }
-
-    func draw(gc: GraphicsContext, colors: ConfigColors) {
-        gc.draw(line: top, bottom,
-                with: colors.participantLine,
-                stroke: stroke)
+        // draw debug rects around content
+//        gc.draw(rect: bounds, with: .red, stroke: config.messageLineStroke)
+//        gc.draw(rect: contentBounds, with: .yellow, stroke: config.messageLineStroke)
     }
 }

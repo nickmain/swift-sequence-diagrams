@@ -45,7 +45,7 @@ public struct Configuration {
     public var interRowGap = 20.0
 
     public var errorFont: Font = .system(size: 16, design: .monospaced)
-    public var errorPadding = 20.0
+    public var errorPadding = 5.0
 
     public var activationWidth = 20.0
     public var activationCenterOffset = 15.0
